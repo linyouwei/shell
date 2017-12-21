@@ -1,0 +1,259 @@
+#!/bin/bash
+#  meizhu自动化部署
+#  -p* 指定项目副本，必须
+#  -c 只进行清除缓存
+#  -a 用对应默认值全部配置一遍
+
+# 注意配置值中不能有单引号！！！
+
+# 检查必须参数
+if [[ $1 != -p* ]]; then
+    echo '请用参数“-p*”指定项目副本'
+    echo '用法1：command -p80    （选择配置）'
+    echo '用法2：command -p80 -a （默认值配置所有）'
+    echo '用法3：command -p80 -c （只清缓存）'
+    exit 2
+fi
+copyName=$1
+
+# 配置项
+arr=(
+'meizhuHost 美住域名 www.meizhuyun.com'
+'mzBookingHost 美住微预定域名 booking.meizhuyun.com'
+'qrcloudHost 锁掌柜域名 qrm.uclbrt.com'
+'qrclientHost 钥匙包域名 cz.uclbrt.com'
+'socketIP 美住WebSocket服务器IP 120.24.54.2'
+'orderChangeTaskPort 短信队列服务端口 9503'
+'meizhuDB 美住数据库名 meizhu'
+'redisServer Redis服务器 127.0.0.1'
+'redisPass Redis密码 UclBrtHongWei1qaz!QAZ'
+'isDebug 调试开关 false'
+'bikeHost 掌点帮域名 booking.uclbrt.com'
+)
+
+# 默认值文件不存在自动创建模板文件
+if type getPath.sh >/dev/null 2>&1; then
+    DIR=$(getPath.sh)
+else
+    DIR=$(pwd)
+fi
+defaultValueFilePath=$DIR'/deploy.ini'
+if [ ! -e $defaultValueFilePath ]; then
+    echo "meizhuPath_${copyName:2}='$(pwd)/'" >> $defaultValueFilePath
+    for data in "${arr[@]}"; do
+        dataItem=($data)
+        echo "${dataItem[0]}_${copyName:2}='${dataItem[2]}'" >> $defaultValueFilePath
+    done
+    echo "已自动创建文件：${defaultValueFilePath}"
+    echo "请修改以上文件中的默认值后，重新运行此命令"
+    exit 1
+fi
+
+# 读取默认值
+while read line || [[ -n $line ]]; do
+    if [[ $line != '' ]]; then
+        eval $line
+    fi
+done < $defaultValueFilePath
+
+# 副本相关默认值
+for data in "${arr[@]}"; do
+    dataItem=($data)
+    if [[ "$(eval echo \$${dataItem[0]}_${copyName:2})" != '' ]]; then
+        eval ${dataItem[0]}_=\$${dataItem[0]}_${copyName:2}
+    fi
+done
+if [[ "$(eval echo \$meizhuPath_${copyName:2})" != '' ]]; then
+    meizhuPath="$(eval echo \$meizhuPath_${copyName:2})"
+else
+    meizhuPath=$meizhuPath_
+fi
+if [ ! -e "$meizhuPath" ]; then
+    echo "项目副本的路径“${meizhuPath}”不存在"
+    echo "请在“${defaultValueFilePath}”中添加该副本的默认值"
+    exit 1
+fi
+
+if [[ $2 != -c ]]; then
+    if [[ $2 == -a ]]; then
+        operation='0'
+    else
+        # 用户交互
+        index=1
+        for data in "${arr[@]}"; do
+            dataItem=($data)
+            echo "输入“"$index"” 配置【"${dataItem[1]}"】"
+            index=$(( index+1 ))
+        done
+        echo ''
+        echo '输入你要配置的选项序号，从头全部配置输入“回车”或“0”：'
+        read -e operation
+
+        if [[ "$operation" == '' || "$operation" == '0' ]]; then
+            operation='0'
+            for data in "${arr[@]}"; do
+                dataItem=($data)
+                echo "输入【${dataItem[1]}】（回车为默认值）："
+                read -e "${dataItem[0]}"
+            done
+        else
+            configIndex=$(( operation-1 ))
+            if [[ ${arr[$configIndex]} != '' ]]; then
+                dataItem=(${arr[$configIndex]})
+                echo "输入【${dataItem[1]}】（回车为默认值）："
+                read -e "${dataItem[0]}"
+            else
+                echo '选项不存在，请重新运行命令'
+                exit 1
+            fi
+        fi
+    fi
+
+    # 如果变量为空则使用默认值
+    for data in "${arr[@]}"; do
+        dataItem=($data)
+        if [[ "$(eval echo \$${dataItem[0]})" == '' ]]; then
+            # 优先使用默认值文件中的值
+            if [[ "$(eval echo \$${dataItem[0]}_)" != '' ]]; then
+                eval ${dataItem[0]}=\$${dataItem[0]}_
+            else
+                eval ${dataItem[0]}=\'${dataItem[2]}\'
+            fi
+        fi
+    done
+
+    # url配置文件
+    mzConstant=$meizhuPath'src/Pms/meizhu/Common/Common/constant.php'
+    mzConfig=$meizhuPath'src/Pms/meizhu/Common/Conf/config.php'
+    mzBookConstant=$meizhuPath'src/Book/meizhu/Common/Common/constant.php'
+    mzBookConfig=$meizhuPath'src/Book/meizhu/Common/Conf/config.php'
+    mzBpassConfig=$meizhuPath'src/Bpass/meizhu/Common/Conf/config.php'
+    mzBpassConstant=$meizhuPath'src/Bpass/meizhu/Common/Common/constant.php'
+
+    # 数据库配置文件
+    mzBpassDBConfig=$meizhuPath'src/Bpass/meizhu/Common/Conf/db.php'
+    mzPmsDBConfig=$meizhuPath'src/Pms/meizhu/Common/Conf/db.php'
+    mzBookDBConfig=$meizhuPath'src/Book/meizhu/Common/Conf/db.php'
+
+    # 前端socket服务器地址js文件
+    mzSocketJsSrc=$meizhuPath'src/Pms/run/Public/src/Home/common_control.js'
+    mzSocketJsDist=$meizhuPath'src/Pms/run/Public/dist/Home/common_control.js'
+    # mzSocketJsBookSrct=$meizhuPath'src/Book/run/Public/src/Home/BookPage/book.js'
+    # mzSocketJsBookDist=$meizhuPath'src/Book/run/Public/dist/Home/BookPage/book.js'
+    # mzSocketJsHourBookSrct=$meizhuPath'src/Book/run/Public/src/Home/BookPage/hourbook.js'
+    # mzSocketJsHourBookDist=$meizhuPath'src/Book/run/Public/dist/Home/BookPage/hourbook.js'
+    # mzSocketJsLongBookSrct=$meizhuPath'src/Book/run/Public/src/Home/BookPage/longbook.js'
+    # mzSocketJsLongBookDist=$meizhuPath'src/Book/run/Public/dist/Home/BookPage/longbook.js'
+    # 入口文件
+    mzHomeIndex=$meizhuPath'src/Pms/run/index.php'
+    mzBookIndex=$meizhuPath'src/Book/run/index.php'
+    mzBpassIndex=$meizhuPath'src/Bpass/run/index.php'
+
+    # 替换语法：
+    # sed 's/要替换的字符串/新的字符串/g' file
+
+    # 美住域名
+    if [[ "$operation" == "1" || "$operation" == "0" ]]; then
+        sed -i "s/define('MEIZHU_HOST', 'http:\/\/.*');/define('MEIZHU_HOST', 'http:\/\/"${meizhuHost}"');/g" ${mzBookConstant}
+        sed -i "s/define('MEIZHU_HOST', 'http:\/\/.*');/define('MEIZHU_HOST', 'http:\/\/"${meizhuHost}"');/g" ${mzBpassConstant}
+    fi
+    # 美住微预定域名
+    if [[ "$operation" == "2" || "$operation" == "0" ]]; then
+        sed -i "s/define('MEIZHU_BOOK_HOST', '.*');/define('MEIZHU_BOOK_HOST', '"${mzBookingHost}"');/g" ${mzBookConstant}
+        sed -i "s/define('MEIZHU_BOOK_HOST', '.*');/define('MEIZHU_BOOK_HOST', '"${mzBookingHost}"');/g" ${mzConstant}
+    fi
+    # 锁掌柜域名
+    if [[ "$operation" == "3" || "$operation" == "0" ]]; then
+        sed -i "s/define('QRMASTER_URL', '.*');/define('QRMASTER_URL', '"${qrcloudHost}"');/g" ${mzConstant}
+        sed -i "s/define('QRMASTER_URL', '.*');/define('QRMASTER_URL', '"${qrcloudHost}"');/g" ${mzBpassConstant}
+    fi
+    # 钥匙包域名
+    if [[ "$operation" == "4" || "$operation" == "0" ]]; then
+        sed -i "s/'MANAGE_QRCLIENT_URL'\s*=>\s*'http:\/\/.*\/Extend\/Qrclient'/'MANAGE_QRCLIENT_URL' => 'http:\/\/"${qrclientHost}"\/Extend\/Qrclient'/g" ${mzConfig}
+        sed -i "s/define('QRCLIENT_URL', '.*');/define('QRCLIENT_URL', '"${qrclientHost}"');/g" ${mzConstant}
+        sed -i "s/define('QRCLIENT_URL', '.*');/define('QRCLIENT_URL', '"${qrclientHost}"');/g" ${mzBpassConstant}
+    fi
+     # BOOK钥匙包域名
+    if [[ "$operation" == "4" || "$operation" == "0" ]]; then
+        sed -i "s/'MANAGE_QRCLIENT_URL'\s*=>\s*'http:\/\/.*\/Extend\/Qrclient'/'MANAGE_QRCLIENT_URL' => 'http:\/\/"${qrclientHost}"\/Extend\/Qrclient'/g" ${mzConfig}
+        sed -i "s/define('QRCLIENT_HOST', '.*');/define('QRCLIENT_HOST', '"${qrclientHost}"');/g" ${mzBookConstant}
+    fi
+    # 美住WebSocket服务器IP
+    if [[ "$operation" == "5" || "$operation" == "0" ]]; then
+        sed -i "s/'SOCKET_SERVER_IP'\s*=>\s*'.*'/'SOCKET_SERVER_IP' => '"${socketIP}"'/g" ${mzConfig}
+        sed -i "s/'SOCKET_SERVER_NEWS_IP'\s*=>\s*'.*'/'SOCKET_SERVER_NEWS_IP' => '"${socketIP}"'/g" ${mzConfig}
+        sed -i "s/'SOCKET_SERVER_REMIND_IP'\s*=>\s*'.*'/'SOCKET_SERVER_REMIND_IP' => '"${socketIP}"'/g" ${mzConfig}
+        sed -i "s/window.skServer\s*=\s*'ws:\/\/.*:9501'/window.skServer = 'ws:\/\/"${socketIP}":9501'/g" ${mzSocketJsSrc}
+        sed -i "s/window.skServer=\"ws:\/\/.*:9501\"/window.skServer=\"ws:\/\/"${socketIP}":9501\"/g" ${mzSocketJsDist}
+        sed -i "s/window.remindServer\s*=\s*'ws:\/\/.*:13257'/window.remindServer = 'ws:\/\/"${socketIP}":13257'/g" ${mzSocketJsSrc}
+        sed -i "s/window.remindServer=\"ws:\/\/.*:13257\"/window.remindServer=\"ws:\/\/"${socketIP}":13257\"/g" ${mzSocketJsDist}
+        sed -i "s/window.pushServer\s*=\s*'ws:\/\/.*:13256'/window.pushServer = 'ws:\/\/"${socketIP}":13256'/g" ${mzSocketJsSrc}
+        sed -i "s/window.pushServer=\"ws:\/\/.*:13256\"/window.pushServer=\"ws:\/\/"${socketIP}":13256\"/g" ${mzSocketJsDist}
+        # sed -i "s/window.pushServer\s*=\s*'ws:\/\/.*:13256'/window.pushServer = 'ws:\/\/"${socketIP}":13256'/g" ${mzSocketJsBookSrct}
+        # sed -i "s/window.pushServer=\"ws:\/\/.*:13256\"/window.pushServer=\"ws:\/\/"${socketIP}":13256\"/g" ${mzSocketJsBookDist}
+        # sed -i "s/window.pushServer\s*=\s*'ws:\/\/.*:13256'/window.pushServer = 'ws:\/\/"${socketIP}":13256'/g" ${mzSocketJsHourBookSrct}
+        # sed -i "s/window.pushServer=\"ws:\/\/.*:13256\"/window.pushServer=\"ws:\/\/"${socketIP}":13256\"/g" ${mzSocketJsHourBookDist}
+        # sed -i "s/window.pushServer\s*=\s*'ws:\/\/.*:13256'/window.pushServer = 'ws:\/\/"${socketIP}":13256'/g" ${mzSocketJsLongBookSrct}
+        # sed -i "s/window.pushServer=\"ws:\/\/.*:13256\"/window.pushServer=\"ws:\/\/"${socketIP}":13256\"/g" ${mzSocketJsLongBookDist}
+    fi
+    # 短信队列服务端口
+    if [[ "$operation" == "6" || "$operation" == "0" ]]; then
+        sed -i "s/'TASK_SERVER_PORT'\s*=>\s*'.*'/'TASK_SERVER_PORT' => '"${orderChangeTaskPort}"'/g" ${mzConfig}
+    fi
+    # 美住数据库名
+    if [[ "$operation" == "7" || "$operation" == "0" ]]; then
+        sed -i "s/'DB_NAME'\s*=>\s*'.*'/'DB_NAME' => '"${meizhuDB}"'/g" ${mzPmsDBConfig}
+        sed -i "s/'DB_NAME'\s*=>\s*'.*'/'DB_NAME' => '"${meizhuDB}"'/g" ${mzBpassDBConfig}
+        sed -i "s/'DB_NAME'\s*=>\s*'.*'/'DB_NAME' => '"${meizhuDB}"'/g" ${mzBookDBConfig}
+    fi
+    # Redis服务器
+    if [[ "$operation" == "8" || "$operation" == "0" ]]; then
+        sed -i "s/'REDIS_SERVERIP'\s*=>\s*'.*'/'REDIS_SERVERIP' => '"${redisServer}"'/g" ${mzBookConfig}
+        sed -i "s/'REDIS_SERVERIP'\s*=>\s*'.*'/'REDIS_SERVERIP' => '"${redisServer}"'/g" ${mzConfig}
+        sed -i "s/'REDIS_SERVERIP'\s*=>\s*'.*'/'REDIS_SERVERIP' => '"${redisServer}"'/g" ${mzBpassConfig}
+    fi
+    # Redis密码
+    if [[ "$operation" == "9" || "$operation" == "0" ]]; then
+        sed -i "s/'REDIS_AUTH_PASSWORD'\s*=>\s*'.*'/'REDIS_AUTH_PASSWORD' => '"${redisPass}"'/g" ${mzBookConfig}
+        sed -i "s/'REDIS_AUTH_PASSWORD'\s*=>\s*'.*'/'REDIS_AUTH_PASSWORD' => '"${redisPass}"'/g" ${mzConfig}
+        sed -i "s/'REDIS_AUTH_PASSWORD'\s*=>\s*'.*'/'REDIS_AUTH_PASSWORD' => '"${redisPass}"'/g" ${mzBpassConfig}
+    fi
+    # 调试开关
+    if [[ "$operation" == "10" || "$operation" == "0" ]]; then
+        sed -i "s/define('APP_DEBUG',\s*.*);/define('APP_DEBUG', "${isDebug}");/g" ${mzHomeIndex}
+        sed -i "s/define('APP_DEBUG',\s*.*);/define('APP_DEBUG', "${isDebug}");/g" ${mzBookIndex}
+        sed -i "s/define('APP_DEBUG',\s*.*);/define('APP_DEBUG', "${isDebug}");/g" ${mzBpassIndex}
+        sed -i "s/'debug'\s*=>\s*.*,\s*\/\/\s*极光推送debug/'debug' => "${isDebug}", \/\/ 极光推送debug/g" ${mzConfig}
+        sed -i "s/'qrDebug'\s*=>\s*.*,\s*\/\/\s*钥匙包极光推送debug/'qrDebug' => "${isDebug}", \/\/ 钥匙包极光推送debug/g" ${mzConfig}
+    fi
+    # 掌店帮域名
+    if [[ "$operation" == "11" || "$operation" == "0" ]]; then
+        sed -i "s/define('SHOP_HOST', '.*');/define('SHOP_HOST', '"${bikeHost}"\/api');/g" ${mzBookConstant}
+    fi
+fi
+
+# 清除缓存
+pathArray=(
+'meizhu页面 src/Pms/meizhu/Runtime/Cache'
+'meizhu数据库 src/Pms/meizhu/Runtime/Data'
+'meizhu配置 src/Pms/meizhu/Runtime/common~runtime.php'
+'book页面 src/Book/meizhu/Runtime/Cache'
+'book数据库 src/Book/meizhu/Runtime/Data'
+'book配置 src/Book/meizhu/Runtime/common~runtime.php'
+'bpass页面 src/Bpass/meizhu/Runtime/Cache'
+'bpass数据库 src/Bpass/meizhu/Runtime/Data'
+'bpass配置 src/Bpass/meizhu/Runtime/common~runtime.php'
+)
+for item in "${pathArray[@]}"; do
+    itemArray=($item)
+    cachePath=${meizhuPath}${itemArray[1]}
+    if [ ! -e "${cachePath}" ]; then
+        echo "不需要清${itemArray[0]}缓存，${cachePath} 目录不存在"
+    else
+        rm -rf $cachePath
+        echo "清除${itemArray[0]}缓存成功"
+    fi
+done
+
+echo 'finish'
+echo ''
